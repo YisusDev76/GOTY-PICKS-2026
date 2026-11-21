@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CATEGORIAS, categoriasPrincipales } from "@/data/nominados";
+import { CATEGORIAS, categoriasPrincipales, type Nominado } from "@/data/nominados";
 import { limpiarNombre, urlResultado, type Pick } from "@/lib/picks";
 import { Portada } from "./Portada";
 
@@ -18,8 +18,21 @@ const MODOS: { id: Modo; titulo: string; detalle: string }[] = [
 ];
 
 const CLAVE_LOCAL = "goty-picks-2026";
+/** Pausa antes de pasar sola a la siguiente categoría, para que se vea lo que marcaste. */
+const PAUSA_AVANCE = 1000;
+const PAUSA_IGUAL = 250;
 
-type Estado = { modo: Modo; manual: number[]; picks: Seleccion; nombre: string; paso: Paso };
+type Estado = {
+  modo: Modo;
+  manual: number[];
+  picks: Seleccion;
+  nombre: string;
+  paso: Paso;
+  /** Posición (dentro de las categorías elegidas) que se está viendo en el carrusel. */
+  actual: number;
+  /** Categorías marcadas como "Me da igual": no salen en la boleta. */
+  igual: number[];
+};
 
 function indicesDeModo(modo: Modo, manual: number[]): number[] {
   if (modo === "todas") return CATEGORIAS.map((_, i) => i);
@@ -37,10 +50,15 @@ export function ArmarBoleta({ inicial }: { inicial?: { picks: Pick[]; nombre: st
           picks: Object.fromEntries(inicial.picks.map((p) => [p.cat, { fav: p.fav, bet: p.bet }])),
           nombre: inicial.nombre,
           paso: "boleta",
+          actual: 0,
+          igual: [],
         }
-      : { modo: "top5", manual: [], picks: {}, nombre: "", paso: "elegir" },
+      : { modo: "top5", manual: [], picks: {}, nombre: "", paso: "elegir", actual: 0, igual: [] },
   );
   const [cargado, setCargado] = useState(false);
+  const [direccion, setDireccion] = useState<"izq" | "der">("der");
+  const temporizador = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toque = useRef<{ x: number; y: number } | null>(null);
 
   // Recupera lo que el usuario llevaba (solo en el navegador, después de montar
   // para no romper la "hidratación" de React). Si vienes de "Editar", manda la URL.
@@ -66,26 +84,95 @@ export function ArmarBoleta({ inicial }: { inicial?: { picks: Pick[]; nombre: st
     }
   }, [estado, cargado]);
 
+  // Si el componente se desmonta con un avance pendiente, lo cancelamos.
+  useEffect(
+    () => () => {
+      if (temporizador.current) clearTimeout(temporizador.current);
+    },
+    [],
+  );
+
   const indices = useMemo(() => indicesDeModo(estado.modo, estado.manual), [estado.modo, estado.manual]);
-  const completas = indices.filter((i) => estado.picks[i]?.fav != null && estado.picks[i]?.bet != null).length;
-  const conAlgo = indices.filter((i) => estado.picks[i]?.fav != null || estado.picks[i]?.bet != null).length;
+  const igual = useMemo(() => new Set(estado.igual), [estado.igual]);
+  const ultima = indices.length - 1;
+  // La posición se acota aquí: si cambiaste de modo, puede haber quedado fuera de rango.
+  const pos = Math.max(0, Math.min(estado.actual, ultima));
+
+  const estaCompleta = (cat: number) =>
+    igual.has(cat) || (estado.picks[cat]?.fav != null && estado.picks[cat]?.bet != null);
+  const completas = indices.filter(estaCompleta).length;
+  const enBoleta = indices.filter((i) => !igual.has(i));
+  const conAlgo = enBoleta.filter((i) => estado.picks[i]?.fav != null || estado.picks[i]?.bet != null).length;
 
   const actualizar = (cambio: Partial<Estado>) => setEstado((e) => ({ ...e, ...cambio }));
 
-  const marcar = (cat: number, tipo: "fav" | "bet", nominado: number) =>
-    setEstado((e) => {
-      const actual = e.picks[cat] ?? { fav: null, bet: null };
-      const nuevo = { ...actual, [tipo]: actual[tipo] === nominado ? null : nominado };
-      return { ...e, picks: { ...e.picks, [cat]: nuevo } };
-    });
+  function cancelarAvance() {
+    if (temporizador.current) clearTimeout(temporizador.current);
+    temporizador.current = null;
+  }
+
+  const irA = (nueva: number) => {
+    cancelarAvance();
+    if (nueva < 0 || nueva > ultima || nueva === pos) return;
+    setDireccion(nueva > pos ? "der" : "izq");
+    actualizar({ actual: nueva });
+    window.scrollTo({ top: 0 });
+  };
+
+  const avanzarLuego = (pausa: number) => {
+    cancelarAvance();
+    if (pos >= ultima) return;
+    temporizador.current = setTimeout(() => irA(pos + 1), pausa);
+  };
+
+  const marcar = (cat: number, tipo: "fav" | "bet", nominado: number) => {
+    const previo = estado.picks[cat] ?? { fav: null, bet: null };
+    const nuevo = { ...previo, [tipo]: previo[tipo] === nominado ? null : nominado };
+    setEstado((e) => ({
+      ...e,
+      picks: { ...e.picks, [cat]: nuevo },
+      igual: e.igual.filter((x) => x !== cat),
+    }));
+    if (nuevo.fav != null && nuevo.bet != null) avanzarLuego(PAUSA_AVANCE);
+    else cancelarAvance();
+  };
+
+  const marcarIgual = (cat: number) => {
+    if (igual.has(cat)) {
+      cancelarAvance();
+      setEstado((e) => ({ ...e, igual: e.igual.filter((x) => x !== cat) }));
+      return;
+    }
+    setEstado((e) => ({
+      ...e,
+      igual: [...e.igual, cat],
+      picks: { ...e.picks, [cat]: { fav: null, bet: null } },
+    }));
+    avanzarLuego(PAUSA_IGUAL);
+  };
 
   const verBoleta = () => {
-    const picks: Pick[] = indices.map((cat) => ({
+    cancelarAvance();
+    const picks: Pick[] = enBoleta.map((cat) => ({
       cat,
       fav: estado.picks[cat]?.fav ?? null,
       bet: estado.picks[cat]?.bet ?? null,
     }));
     router.push(urlResultado({ nombre: estado.nombre, picks }));
+  };
+
+  // Deslizar a los lados cambia de categoría; el scroll vertical sigue siendo del navegador.
+  const alTocar = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    toque.current = { x: t.clientX, y: t.clientY };
+  };
+  const alSoltar = (e: React.TouchEvent) => {
+    if (!toque.current) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - toque.current.x;
+    const dy = t.clientY - toque.current.y;
+    toque.current = null;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > 1.5 * Math.abs(dy)) irA(dx < 0 ? pos + 1 : pos - 1);
   };
 
   if (estado.paso === "elegir") {
@@ -171,111 +258,189 @@ export function ArmarBoleta({ inicial }: { inicial?: { picks: Pick[]; nombre: st
     );
   }
 
+  const cat = indices[pos];
+  const categoria = CATEGORIAS[cat];
+  const sel = estado.picks[cat] ?? { fav: null, bet: null };
+  const esIgual = igual.has(cat);
+
   return (
     <main className="mx-auto w-full max-w-3xl px-4 pt-6">
       <div className="flex items-center justify-between gap-3">
         <button
           type="button"
-          onClick={() => actualizar({ paso: "elegir" })}
+          onClick={() => {
+            cancelarAvance();
+            actualizar({ paso: "elegir" });
+          }}
           className="rounded-full border border-borde px-4 py-2 text-sm text-tenue"
         >
           ← Categorías
         </button>
-        <p className="text-right text-sm text-tenue">
+        <button
+          type="button"
+          disabled={conAlgo === 0}
+          onClick={verBoleta}
+          className="rounded-full border border-oro/60 px-4 py-2 text-sm font-semibold text-oro disabled:opacity-30"
+        >
+          Ver boleta
+        </button>
+      </div>
+
+      {/* Progreso: un segmento por categoría. */}
+      <div className="mt-5 flex items-center justify-between text-xs text-tenue">
+        <span>
+          Categoría <span className="font-bold text-white">{pos + 1}</span>/{indices.length}
+        </span>
+        <span>
+          <span className="font-bold text-white">{completas}</span>/{indices.length} completas
+        </span>
+      </div>
+      <div className="mt-2 flex gap-0.5" aria-hidden>
+        {indices.map((i, n) => (
+          <span
+            key={i}
+            className={`h-1.5 flex-1 rounded-full ${
+              igual.has(i) ? "bg-tenue/50" : estaCompleta(i) ? "bg-oro" : "bg-borde"
+            } ${n === pos ? "outline outline-1 outline-offset-1 outline-white/70" : ""}`}
+          />
+        ))}
+      </div>
+
+      <section
+        key={categoria.id}
+        aria-labelledby={`cat-${categoria.id}`}
+        onTouchStart={alTocar}
+        onTouchEnd={alSoltar}
+        className={`mt-5 touch-pan-y ${direccion === "der" ? "entrar-der" : "entrar-izq"}`}
+      >
+        <div className="flex items-baseline justify-between gap-2">
+          <div>
+            <h2 id={`cat-${categoria.id}`} className="font-display text-2xl uppercase leading-tight">
+              {categoria.nombre}
+            </h2>
+            <p className="text-xs text-tenue">{categoria.nombreOriginal}</p>
+          </div>
+          <span className="shrink-0 text-sm">
+            <span className={sel.fav != null ? "" : "opacity-25"}>❤️</span>{" "}
+            <span className={sel.bet != null ? "" : "opacity-25"}>💰</span>
+          </span>
+        </div>
+        <p className="mt-2 text-sm text-tenue">
           Toca <span className="text-amor">❤️</span> si quieres que gane y <span className="text-oro">💰</span> si
           apostarías por él.
         </p>
-      </div>
 
-      <div className="mt-6 space-y-10">
-        {indices.map((cat) => {
-          const categoria = CATEGORIAS[cat];
-          const sel = estado.picks[cat] ?? { fav: null, bet: null };
-          return (
-            <section key={categoria.id} aria-labelledby={`cat-${categoria.id}`}>
-              <div className="sticky top-0 z-10 -mx-4 flex items-baseline justify-between gap-2 bg-fondo/90 px-4 py-3 backdrop-blur">
-                <div>
-                  <h2 id={`cat-${categoria.id}`} className="font-display text-xl uppercase leading-tight">
-                    {categoria.nombre}
-                  </h2>
-                  <p className="text-xs text-tenue">{categoria.nombreOriginal}</p>
-                </div>
-                <span className="shrink-0 text-sm">
-                  <span className={sel.fav != null ? "" : "opacity-25"}>❤️</span>{" "}
-                  <span className={sel.bet != null ? "" : "opacity-25"}>💰</span>
-                </span>
-              </div>
+        <ul
+          className={`mt-4 grid grid-cols-2 gap-x-3 gap-y-5 transition sm:grid-cols-3 ${esIgual ? "opacity-35" : ""}`}
+        >
+          {categoria.nominados.map((nom, i) => (
+            <TarjetaNominado
+              key={`${nom.titulo}-${i}`}
+              nominado={nom}
+              esFav={sel.fav === i}
+              esBet={sel.bet === i}
+              onFav={() => marcar(cat, "fav", i)}
+              onBet={() => marcar(cat, "bet", i)}
+            />
+          ))}
+        </ul>
 
-              <ul className="mt-3 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3">
-                {categoria.nominados.map((nom, i) => {
-                  const esFav = sel.fav === i;
-                  const esBet = sel.bet === i;
-                  return (
-                    <li key={`${nom.titulo}-${i}`} className="flex flex-col">
-                      <Portada
-                        nominado={nom}
-                        className={`ring-offset-2 ring-offset-fondo transition ${
-                          esFav && esBet
-                            ? "ring-4 ring-oro"
-                            : esFav
-                              ? "ring-4 ring-amor"
-                              : esBet
-                                ? "ring-4 ring-oro"
-                                : ""
-                        }`}
-                      />
-                      {/* El nombre SIEMPRE va debajo de la portada, nunca encima. */}
-                      <p className="mt-2 text-sm font-semibold leading-snug">{nom.titulo}</p>
-                      {nom.detalle && <p className="text-xs text-tenue">{nom.detalle}</p>}
-                      <div className="mt-auto grid grid-cols-2 gap-2 pt-2">
-                        <button
-                          type="button"
-                          onClick={() => marcar(cat, "fav", i)}
-                          aria-pressed={esFav}
-                          aria-label={`Quiero que gane ${nom.titulo}`}
-                          className={`h-11 rounded-full border text-lg transition ${
-                            esFav ? "border-amor bg-amor/20" : "border-borde bg-panel opacity-70"
-                          }`}
-                        >
-                          ❤️
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => marcar(cat, "bet", i)}
-                          aria-pressed={esBet}
-                          aria-label={`Apostaría por ${nom.titulo}`}
-                          className={`h-11 rounded-full border text-lg transition ${
-                            esBet ? "border-oro bg-oro/20" : "border-borde bg-panel opacity-70"
-                          }`}
-                        >
-                          💰
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          );
-        })}
-      </div>
+        <button
+          type="button"
+          onClick={() => marcarIgual(cat)}
+          aria-pressed={esIgual}
+          className={`mt-6 w-full rounded-2xl border px-4 py-3 font-semibold transition ${
+            esIgual ? "border-tenue bg-tenue/20 text-white" : "border-dashed border-borde text-tenue"
+          }`}
+        >
+          {esIgual ? "🤷 Me da igual · no sale en tu boleta" : "🤷 Me da igual esta categoría"}
+        </button>
+      </section>
 
       <BarraInferior>
         <div className="flex items-center gap-3">
-          <p className="shrink-0 text-sm text-tenue">
-            <span className="font-bold text-white">{completas}</span>/{indices.length} completas
-          </p>
           <button
             type="button"
-            disabled={conAlgo === 0}
-            onClick={verBoleta}
-            className="flex-1 rounded-full bg-oro px-6 py-4 font-bold text-black disabled:opacity-40"
+            disabled={pos === 0}
+            onClick={() => irA(pos - 1)}
+            aria-label="Categoría anterior"
+            className="rounded-full border border-borde px-5 py-4 font-bold disabled:opacity-30"
           >
-            Ver mi boleta →
+            ←
           </button>
+          {pos < ultima ? (
+            <button
+              type="button"
+              onClick={() => irA(pos + 1)}
+              className="flex-1 rounded-full bg-oro px-6 py-4 font-bold text-black"
+            >
+              Siguiente →
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={conAlgo === 0}
+              onClick={verBoleta}
+              className="flex-1 rounded-full bg-oro px-6 py-4 font-bold text-black disabled:opacity-40"
+            >
+              Ver mi boleta →
+            </button>
+          )}
         </div>
       </BarraInferior>
     </main>
+  );
+}
+
+function TarjetaNominado({
+  nominado,
+  esFav,
+  esBet,
+  onFav,
+  onBet,
+}: {
+  nominado: Nominado;
+  esFav: boolean;
+  esBet: boolean;
+  onFav: () => void;
+  onBet: () => void;
+}) {
+  return (
+    <li className="flex flex-col">
+      <Portada
+        nominado={nominado}
+        className={`ring-offset-2 ring-offset-fondo transition ${
+          esFav && esBet ? "ring-4 ring-oro" : esFav ? "ring-4 ring-amor" : esBet ? "ring-4 ring-oro" : ""
+        }`}
+      />
+      {/* El nombre SIEMPRE va debajo de la portada, nunca encima. */}
+      <p className="mt-2 text-sm font-semibold leading-snug">{nominado.titulo}</p>
+      {nominado.detalle && <p className="text-xs text-tenue">{nominado.detalle}</p>}
+      <div className="mt-auto grid grid-cols-2 gap-2 pt-2">
+        <button
+          type="button"
+          onClick={onFav}
+          aria-pressed={esFav}
+          aria-label={`Quiero que gane ${nominado.titulo}`}
+          className={`h-11 rounded-full border text-lg transition ${
+            esFav ? "border-amor bg-amor/20" : "border-borde bg-panel opacity-70"
+          }`}
+        >
+          ❤️
+        </button>
+        <button
+          type="button"
+          onClick={onBet}
+          aria-pressed={esBet}
+          aria-label={`Apostaría por ${nominado.titulo}`}
+          className={`h-11 rounded-full border text-lg transition ${
+            esBet ? "border-oro bg-oro/20" : "border-borde bg-panel opacity-70"
+          }`}
+        >
+          💰
+        </button>
+      </div>
+    </li>
   );
 }
 
