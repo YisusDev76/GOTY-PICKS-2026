@@ -13,6 +13,8 @@ const nextConfig: NextConfig = {
       },
     },
   },
+  // Permite abrir el servidor de dev desde otros dispositivos de la red local (p. ej. el iPhone).
+  allowedDevOrigins: ['192.168.100.*'],
 };
 
 export default nextConfig;
