@@ -26,3 +26,18 @@ body {
   font-family: var(--font-sans);
   -webkit-tap-highlight-color: transparent;
 }
+
+/* Carrusel: la categoría entra desde el lado hacia el que avanzas. */
+@keyframes entrar-der {
+  from { opacity: 0; transform: translateX(32px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes entrar-izq {
+  from { opacity: 0; transform: translateX(-32px); }
+  to { opacity: 1; transform: none; }
+}
+.entrar-der { animation: entrar-der 0.22s ease-out; }
+.entrar-izq { animation: entrar-izq 0.22s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .entrar-der, .entrar-izq { animation: none; }
+}
