@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+/* Paleta: fondo casi negro, dorado de "premiación" y morado de acento. */
+@theme {
+  --color-fondo: #0b0a12;
+  --color-panel: #16141f;
+  --color-borde: #2a2738;
+  --color-oro: #f5c451;
+  --color-amor: #ff4d7d;
+  --color-tenue: #9b97ad;
+  --font-display: var(--font-archivo), system-ui, sans-serif;
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-fondo);
+  background-image:
+    radial-gradient(circle at 10% -10%, rgb(245 196 81 / 0.16), transparent 40%),
+    radial-gradient(circle at 110% 30%, rgb(139 92 246 / 0.14), transparent 45%);
+  background-attachment: fixed;
+  color: white;
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
